@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/
+
+# Data & artifacts (large / generated) — anchored to repo root so cwm/data/ source is kept
+/data/
+/checkpoints/
+/runs/
+*.bin
+*.pgn
+*.pgn.zst
+*.pt
+*.png
+
+# OS
+.DS_Store

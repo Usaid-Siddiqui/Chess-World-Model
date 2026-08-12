@@ -1,0 +1,26 @@
+# Real run on a single cloud GPU. ~25M-param backbone; reproduces the ~99% board
+# probe on real Lichess data in a few GPU-hours.
+seed: 0
+
+model:
+  ctx: 512
+  n_layer: 8
+  n_head: 8
+  n_embd: 512
+  dropout: 0.0
+  bias: true
+
+train:
+  batch_size: 128
+  lr: 6.0e-4
+  weight_decay: 0.1
+  grad_clip: 1.0
+  max_steps: 60000
+  warmup_steps: 2000
+  log_every: 100
+
+jepa:
+  ema_decay: 0.999
+  rollout_steps: 5
+  predictor_layers: 3
+  vicreg_weight: 0.0

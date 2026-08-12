@@ -1,0 +1,27 @@
+# Tiny config for local smoke-testing on Apple Silicon / CPU.
+# Runs the whole pipeline end-to-end in minutes; not meant to reach real strength.
+seed: 0
+
+model:
+  ctx: 256
+  n_layer: 4
+  n_head: 4
+  n_embd: 256
+  dropout: 0.0
+  bias: true
+
+train:
+  batch_size: 32
+  lr: 3.0e-4
+  weight_decay: 0.1
+  grad_clip: 1.0
+  max_steps: 400
+  warmup_steps: 40
+  log_every: 25
+
+# JEPA-arm knobs (Phase 2); ignored by arm=ar.
+jepa:
+  ema_decay: 0.996
+  rollout_steps: 3
+  predictor_layers: 2
+  vicreg_weight: 0.0
