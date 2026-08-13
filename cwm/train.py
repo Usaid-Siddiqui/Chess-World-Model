@@ -5,9 +5,15 @@ Phase 2 and dispatches to the JEPA training step once that arm lands. Checkpoint
 the model state, the model config, and the data meta so probing/eval can rebuild the
 model without guessing hyperparameters.
 
+On CUDA the training forward runs under bf16 autocast with TF32 matmuls enabled — a large
+speedup on Ampere+ (A100/H100) over fp32, with no loss scaling needed for bf16. MPS/CPU
+fall back to fp32. Checkpoints are saved periodically (every ``eval_every`` steps), so a
+run is crash-safe and any checkpoint can be probed from a separate process (via
+``cwm.probe.probe``) while training continues.
+
 Usage:
-    python -m cwm.train --config configs/dev_mps.yaml --arm ar \\
-        --data-dir data/dev --out checkpoints/dev_ar
+    python -m cwm.train --config configs/small_gpu.yaml --arm ar \\
+        --data-dir data/lichess --out checkpoints/ar
 """
 
 from __future__ import annotations
@@ -16,6 +22,7 @@ import argparse
 import json
 import math
 import time
+from contextlib import nullcontext
 from pathlib import Path
 
 import torch
@@ -54,13 +61,14 @@ def infinite_batches(loader: DataLoader):
 
 
 @torch.no_grad()
-def evaluate(model, loader, device, max_batches: int = 20) -> float:
+def evaluate(model, loader, device, autocast_ctx, max_batches: int = 20) -> float:
     model.eval()
     total, n = 0.0, 0
     for i, batch in enumerate(loader):
         if i >= max_batches:
             break
-        loss = model.compute_loss(batch["input_ids"].to(device))
+        with autocast_ctx():
+            loss = model.compute_loss(batch["input_ids"].to(device))
         total += loss.item()
         n += 1
     model.train()
@@ -72,19 +80,29 @@ def train(args) -> None:
     device = pick_device(args.device)
     torch.manual_seed(cfg.get("seed", 0))
 
+    use_amp = device.type == "cuda"
+    if use_amp:
+        torch.set_float32_matmul_precision("high")  # TF32 matmuls on Ampere+
+        torch.backends.cudnn.allow_tf32 = True
+
+    def autocast_ctx():
+        return torch.autocast(device_type="cuda", dtype=torch.bfloat16) if use_amp else nullcontext()
+
     train_ds = GameDataset(args.data_dir, "train", ctx=cfg["model"]["ctx"])
     val_ds = GameDataset(args.data_dir, "val", ctx=cfg["model"]["ctx"])
     tcfg = cfg["train"]
     train_loader = DataLoader(
         train_ds, batch_size=tcfg["batch_size"], shuffle=True, drop_last=True,
-        num_workers=args.num_workers,
+        num_workers=args.num_workers, pin_memory=use_amp,
     )
     val_loader = DataLoader(val_ds, batch_size=tcfg["batch_size"], shuffle=False)
 
     model_cfg = GPTConfig(vocab_size=train_ds.meta["vocab_size"], **cfg["model"])
-    model = build_model(args.arm, model_cfg).to(device)
-    print(f"device={device}  arm={args.arm}  params={model.backbone.num_params()/1e6:.1f}M  "
-          f"train_games={len(train_ds)}  val_games={len(val_ds)}")
+    raw_model = build_model(args.arm, model_cfg).to(device)
+    model = torch.compile(raw_model) if args.compile else raw_model
+    print(f"device={device}  arm={args.arm}  amp={'bf16' if use_amp else 'off'}  "
+          f"compile={args.compile}  params={raw_model.backbone.num_params()/1e6:.1f}M  "
+          f"train_games={len(train_ds)}  val_games={len(val_ds)}", flush=True)
 
     optim = torch.optim.AdamW(
         model.parameters(), lr=tcfg["lr"], weight_decay=tcfg.get("weight_decay", 0.1),
@@ -93,6 +111,27 @@ def train(args) -> None:
 
     total_steps = tcfg["max_steps"]
     warmup = tcfg.get("warmup_steps", max(1, total_steps // 20))
+    log_every = tcfg.get("log_every", 50)
+    eval_every = tcfg.get("eval_every", max(1, total_steps // 10))
+
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    with open(out / "train_config.json", "w") as f:
+        json.dump({"config": cfg, "arm": args.arm, "data_dir": args.data_dir}, f, indent=2)
+
+    def save_checkpoint(step: int, val_loss: float | None) -> None:
+        torch.save(
+            {
+                "model_state": raw_model.state_dict(),
+                "model_cfg": vars(model_cfg),
+                "arm": args.arm,
+                "data_meta": train_ds.meta,
+                "step": step,
+                "val_loss": val_loss,
+            },
+            out / "model.pt",
+        )
+
     batches = infinite_batches(train_loader)
     t0 = time.time()
     for step in range(total_steps):
@@ -101,38 +140,29 @@ def train(args) -> None:
             g["lr"] = lr
 
         batch = next(batches)
-        loss = model.compute_loss(batch["input_ids"].to(device))
+        with autocast_ctx():
+            loss = model.compute_loss(batch["input_ids"].to(device))
         optim.zero_grad(set_to_none=True)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), tcfg.get("grad_clip", 1.0))
         optim.step()
-        if hasattr(model, "update_teacher"):
-            model.update_teacher()
+        if hasattr(raw_model, "update_teacher"):
+            raw_model.update_teacher()
 
-        if step % tcfg.get("log_every", 50) == 0 or step == total_steps - 1:
+        if step % log_every == 0 or step == total_steps - 1:
             dt = time.time() - t0
-            print(f"step {step:5d}/{total_steps}  loss {loss.item():.4f}  lr {lr:.2e}  "
+            print(f"step {step:6d}/{total_steps}  loss {loss.item():.4f}  lr {lr:.2e}  "
                   f"{dt:.1f}s", flush=True)
 
-    val_loss = evaluate(model, val_loader, device)
-    print(f"final val loss: {val_loss:.4f}")
+        # Periodic eval + checkpoint (crash-safe, probeable), optionally an inline probe.
+        is_eval_step = (step + 1) % eval_every == 0 or step == total_steps - 1
+        if is_eval_step:
+            val_loss = evaluate(model, val_loader, device, autocast_ctx)
+            save_checkpoint(step + 1, val_loss)
+            print(f"  [eval] step {step+1}  val_loss {val_loss:.4f}  [checkpoint saved]",
+                  flush=True)
 
-    out = Path(args.out)
-    out.mkdir(parents=True, exist_ok=True)
-    torch.save(
-        {
-            "model_state": model.state_dict(),
-            "model_cfg": vars(model_cfg),
-            "arm": args.arm,
-            "data_meta": train_ds.meta,
-            "step": total_steps,
-            "val_loss": val_loss,
-        },
-        out / "model.pt",
-    )
-    with open(out / "train_config.json", "w") as f:
-        json.dump({"config": cfg, "arm": args.arm, "data_dir": args.data_dir}, f, indent=2)
-    print(f"saved checkpoint -> {out/'model.pt'}")
+    print(f"done. checkpoint -> {out/'model.pt'}", flush=True)
 
 
 def main() -> None:
@@ -142,7 +172,8 @@ def main() -> None:
     ap.add_argument("--data-dir", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--device", default="auto")
-    ap.add_argument("--num-workers", type=int, default=0)
+    ap.add_argument("--num-workers", type=int, default=4)
+    ap.add_argument("--compile", action="store_true", help="wrap model in torch.compile")
     train(ap.parse_args())
 
 

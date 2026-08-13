@@ -18,6 +18,7 @@ train:
   max_steps: 400
   warmup_steps: 40
   log_every: 25
+  eval_every: 200          # val loss + checkpoint every N steps
 
 # JEPA-arm knobs (Phase 2); ignored by arm=ar.
 jepa:
