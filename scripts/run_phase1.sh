@@ -13,7 +13,8 @@
 #   MODE=real MONTH=2016-04 MAX_GAMES=200000 MIN_ELO=1600 bash scripts/run_phase1.sh
 set -euo pipefail
 
-PY=".venv/bin/python"
+# Interpreter: defaults to the local venv, override for containers (e.g. PY=python).
+PY="${PY:-.venv/bin/python}"
 MODE="${MODE:-dev}"
 
 if [[ "$MODE" == "dev" ]]; then
