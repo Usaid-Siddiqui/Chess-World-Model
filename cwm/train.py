@@ -1,15 +1,22 @@
 """Unified trainer.
 
 ``arm=ar`` trains the autoregressive baseline (Phase 1). ``arm=jepa`` is wired for
-Phase 2 and dispatches to the JEPA training step once that arm lands. Checkpoints store
-the model state, the model config, and the data meta so probing/eval can rebuild the
-model without guessing hyperparameters.
+Phase 2 and dispatches to the JEPA training step once that arm lands.
 
-On CUDA the training forward runs under bf16 autocast with TF32 matmuls enabled — a large
-speedup on Ampere+ (A100/H100) over fp32, with no loss scaling needed for bf16. MPS/CPU
-fall back to fp32. Checkpoints are saved periodically (every ``eval_every`` steps), so a
-run is crash-safe and any checkpoint can be probed from a separate process (via
-``cwm.probe.probe``) while training continues.
+Training length is **data-relative**: the config sets ``epochs`` and the trainer derives
+``max_steps`` from the actual dataset size (``max_steps`` may be given to override). This
+prevents the failure mode where an arbitrary step count silently becomes 100+ epochs and
+the model memorizes the data. The header prints epochs/steps/tokens so the run's scale is
+explicit.
+
+On CUDA the forward runs under bf16 autocast with TF32 matmuls (a large speedup on
+Ampere+; bf16 needs no loss scaling); MPS/CPU fall back to fp32.
+
+Instrumentation, written under ``--out``:
+  * ``train.log``   — a copy of everything printed,
+  * ``metrics.csv`` — ``step,train_loss,val_loss,lr,elapsed_s`` appended each eval,
+  * ``model.pt``    — rolling latest checkpoint (crash-safe / resume),
+  * ``model_best.pt`` — checkpoint at the lowest val loss (for probing / use).
 
 Usage:
     python -m cwm.train --config configs/small_gpu.yaml --arm ar \\
@@ -61,7 +68,7 @@ def infinite_batches(loader: DataLoader):
 
 
 @torch.no_grad()
-def evaluate(model, loader, device, autocast_ctx, max_batches: int = 20) -> float:
+def evaluate(model, loader, device, autocast_ctx, max_batches: int = 40) -> float:
     model.eval()
     total, n = 0.0, 0
     for i, batch in enumerate(loader):
@@ -88,38 +95,52 @@ def train(args) -> None:
     def autocast_ctx():
         return torch.autocast(device_type="cuda", dtype=torch.bfloat16) if use_amp else nullcontext()
 
-    train_ds = GameDataset(args.data_dir, "train", ctx=cfg["model"]["ctx"])
-    val_ds = GameDataset(args.data_dir, "val", ctx=cfg["model"]["ctx"])
+    ctx = cfg["model"]["ctx"]
+    train_ds = GameDataset(args.data_dir, "train", ctx=ctx)
+    val_ds = GameDataset(args.data_dir, "val", ctx=ctx)
     tcfg = cfg["train"]
+    batch_size = tcfg["batch_size"]
     train_loader = DataLoader(
-        train_ds, batch_size=tcfg["batch_size"], shuffle=True, drop_last=True,
+        train_ds, batch_size=batch_size, shuffle=True, drop_last=True,
         num_workers=args.num_workers, pin_memory=use_amp,
     )
-    val_loader = DataLoader(val_ds, batch_size=tcfg["batch_size"], shuffle=False)
+    val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False)
 
     model_cfg = GPTConfig(vocab_size=train_ds.meta["vocab_size"], **cfg["model"])
     raw_model = build_model(args.arm, model_cfg).to(device)
     model = torch.compile(raw_model) if args.compile else raw_model
-    print(f"device={device}  arm={args.arm}  amp={'bf16' if use_amp else 'off'}  "
-          f"compile={args.compile}  params={raw_model.backbone.num_params()/1e6:.1f}M  "
-          f"train_games={len(train_ds)}  val_games={len(val_ds)}", flush=True)
 
-    optim = torch.optim.AdamW(
-        model.parameters(), lr=tcfg["lr"], weight_decay=tcfg.get("weight_decay", 0.1),
-        betas=(0.9, 0.95),
-    )
-
-    total_steps = tcfg["max_steps"]
-    warmup = tcfg.get("warmup_steps", max(1, total_steps // 20))
+    # Data-relative schedule: derive steps from epochs and the real dataset size.
+    steps_per_epoch = max(1, len(train_ds) // batch_size)
+    max_steps = tcfg.get("max_steps")
+    if max_steps is None:
+        if "epochs" not in tcfg:
+            raise ValueError("config train section needs either 'epochs' or 'max_steps'")
+        max_steps = int(math.ceil(tcfg["epochs"] * steps_per_epoch))
+    epochs = max_steps / steps_per_epoch
+    warmup = tcfg.get("warmup_steps") or max(1, int(tcfg.get("warmup_frac", 0.05) * max_steps))
     log_every = tcfg.get("log_every", 50)
-    eval_every = tcfg.get("eval_every", max(1, total_steps // 10))
+    eval_every = tcfg.get("eval_every", max(1, max_steps // 10))
+    tokens_per_epoch = len(train_ds.tokens)
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     with open(out / "train_config.json", "w") as f:
         json.dump({"config": cfg, "arm": args.arm, "data_dir": args.data_dir}, f, indent=2)
+    logf = open(out / "train.log", "a")
+    metrics_path = out / "metrics.csv"
+    write_header = not metrics_path.exists() or metrics_path.stat().st_size == 0
+    metricsf = open(metrics_path, "a")
+    if write_header:
+        metricsf.write("step,train_loss,val_loss,lr,elapsed_s\n")
+        metricsf.flush()
 
-    def save_checkpoint(step: int, val_loss: float | None) -> None:
+    def log(msg: str) -> None:
+        print(msg, flush=True)
+        logf.write(msg + "\n")
+        logf.flush()
+
+    def save_checkpoint(path: Path, step: int, val_loss: float | None) -> None:
         torch.save(
             {
                 "model_state": raw_model.state_dict(),
@@ -129,13 +150,28 @@ def train(args) -> None:
                 "step": step,
                 "val_loss": val_loss,
             },
-            out / "model.pt",
+            path,
         )
 
+    log(f"=== run {time.strftime('%Y-%m-%dT%H:%M:%S')}  device={device}  arm={args.arm}  "
+        f"amp={'bf16' if use_amp else 'off'}  compile={args.compile} ===")
+    log(f"model: params={raw_model.backbone.num_params()/1e6:.1f}M  dropout={model_cfg.dropout}")
+    log(f"data:  train_games={len(train_ds)}  val_games={len(val_ds)}  "
+        f"tokens/epoch={tokens_per_epoch/1e6:.1f}M")
+    log(f"sched: epochs={epochs:.2f}  steps={max_steps}  steps/epoch={steps_per_epoch}  "
+        f"warmup={warmup}  eval_every={eval_every}  tokens_seen={epochs*tokens_per_epoch/1e6:.0f}M")
+
+    optim = torch.optim.AdamW(
+        model.parameters(), lr=tcfg["lr"], weight_decay=tcfg.get("weight_decay", 0.1),
+        betas=(0.9, 0.95),
+    )
+
+    best_val = float("inf")
+    last_loss = float("nan")
     batches = infinite_batches(train_loader)
     t0 = time.time()
-    for step in range(total_steps):
-        lr = lr_at(step, tcfg["lr"], warmup, total_steps)
+    for step in range(max_steps):
+        lr = lr_at(step, tcfg["lr"], warmup, max_steps)
         for g in optim.param_groups:
             g["lr"] = lr
 
@@ -148,21 +184,29 @@ def train(args) -> None:
         optim.step()
         if hasattr(raw_model, "update_teacher"):
             raw_model.update_teacher()
+        last_loss = loss.item()
 
-        if step % log_every == 0 or step == total_steps - 1:
-            dt = time.time() - t0
-            print(f"step {step:6d}/{total_steps}  loss {loss.item():.4f}  lr {lr:.2e}  "
-                  f"{dt:.1f}s", flush=True)
+        if step % log_every == 0 or step == max_steps - 1:
+            log(f"step {step:6d}/{max_steps}  loss {last_loss:.4f}  lr {lr:.2e}  "
+                f"{time.time()-t0:.1f}s")
 
-        # Periodic eval + checkpoint (crash-safe, probeable), optionally an inline probe.
-        is_eval_step = (step + 1) % eval_every == 0 or step == total_steps - 1
-        if is_eval_step:
+        if (step + 1) % eval_every == 0 or step == max_steps - 1:
             val_loss = evaluate(model, val_loader, device, autocast_ctx)
-            save_checkpoint(step + 1, val_loss)
-            print(f"  [eval] step {step+1}  val_loss {val_loss:.4f}  [checkpoint saved]",
-                  flush=True)
+            elapsed = time.time() - t0
+            metricsf.write(f"{step+1},{last_loss:.4f},{val_loss:.4f},{lr:.3e},{elapsed:.1f}\n")
+            metricsf.flush()
+            save_checkpoint(out / "model.pt", step + 1, val_loss)  # rolling latest
+            tag = ""
+            if val_loss < best_val:
+                best_val = val_loss
+                save_checkpoint(out / "model_best.pt", step + 1, val_loss)
+                tag = "  *best*"
+            log(f"  [eval] step {step+1}  val_loss {val_loss:.4f}  "
+                f"train_loss {last_loss:.4f}{tag}  [saved]")
 
-    print(f"done. checkpoint -> {out/'model.pt'}", flush=True)
+    log(f"done. best val_loss {best_val:.4f}  ->  {out/'model_best.pt'}  (latest {out/'model.pt'})")
+    logf.close()
+    metricsf.close()
 
 
 def main() -> None:

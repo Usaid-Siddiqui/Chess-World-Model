@@ -12,7 +12,7 @@
 #
 # Examples:
 #   bash scripts/run_phase1.sh
-#   MODE=real MONTH=2016-04 MAX_GAMES=200000 MIN_ELO=1600 bash scripts/run_phase1.sh
+#   MODE=real MONTH=2016-04 MIN_ELO=1600 bash scripts/run_phase1.sh   # MAX_GAMES defaults to 1M
 set -euo pipefail
 
 # Interpreter: defaults to the local venv, override for containers (e.g. PY=python).
@@ -36,7 +36,7 @@ else
   prepare_data() {
     $PY -m cwm.data.prepare --source lichess --month "$MONTH" --out-dir "$DATA_DIR" \
         --min-elo "${MIN_ELO:-1600}" --min-plies 10 --max-plies "${MAX_PLIES:-512}" \
-        --max-games "${MAX_GAMES:-200000}" --val-frac 0.02
+        --max-games "${MAX_GAMES:-1000000}" --val-frac 0.02
   }
 fi
 
@@ -52,5 +52,6 @@ echo "== training AR baseline =="
 $PY -m cwm.train --config "$CONFIG" --arm ar --data-dir "$DATA_DIR" --out "$OUT"
 
 echo "== probing board state =="
-$PY -m cwm.probe.probe --checkpoint "$OUT/model.pt" --data-dir "$DATA_DIR" \
+CKPT="$OUT/model_best.pt"; [[ -f "$CKPT" ]] || CKPT="$OUT/model.pt"
+$PY -m cwm.probe.probe --checkpoint "$CKPT" --data-dir "$DATA_DIR" \
     --split val --layer -1 --max-positions "${MAX_POS:-60000}"

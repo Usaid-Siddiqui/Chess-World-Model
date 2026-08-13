@@ -7,7 +7,7 @@ model:
   n_layer: 8
   n_head: 8
   n_embd: 512
-  dropout: 0.0
+  dropout: 0.1             # regularization; helps against overfitting on repeated data
   bias: true
 
 train:
@@ -15,8 +15,8 @@ train:
   lr: 6.0e-4
   weight_decay: 0.1
   grad_clip: 1.0
-  max_steps: 60000
-  warmup_steps: 2000
+  epochs: 8                # steps derived from dataset size (not a hardcoded step count)
+  warmup_frac: 0.05        # warmup = 5% of derived steps
   log_every: 100
   eval_every: 2000         # val loss + checkpoint every N steps (crash-safe; probe externally)
 

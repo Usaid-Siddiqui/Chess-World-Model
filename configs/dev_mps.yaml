@@ -15,8 +15,8 @@ train:
   lr: 3.0e-4
   weight_decay: 0.1
   grad_clip: 1.0
-  max_steps: 400
-  warmup_steps: 40
+  epochs: 6                # steps derived from dataset size
+  warmup_frac: 0.1
   log_every: 25
   eval_every: 200          # val loss + checkpoint every N steps
 
