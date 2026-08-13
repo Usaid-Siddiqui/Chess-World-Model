@@ -8,6 +8,8 @@
 # MODE=real: streams a capped subset of a Lichess month, trains the small_gpu model.
 #   This is the run that reproduces the ~99% linear board probe. Needs network + a GPU.
 #
+# Prepare is skipped when the shards already exist; set FORCE=1 to re-tokenize.
+#
 # Examples:
 #   bash scripts/run_phase1.sh
 #   MODE=real MONTH=2016-04 MAX_GAMES=200000 MIN_ELO=1600 bash scripts/run_phase1.sh
@@ -21,17 +23,29 @@ if [[ "$MODE" == "dev" ]]; then
   DATA_DIR="${DATA_DIR:-data/dev}"
   CONFIG="${CONFIG:-configs/dev_mps.yaml}"
   OUT="${OUT:-checkpoints/dev_ar}"
-  echo "== [dev] preparing random games =="
-  $PY -m cwm.data.prepare --source random --out-dir "$DATA_DIR" \
-      --num-random "${NUM_RANDOM:-3000}" --min-plies 10 --max-plies 80 --val-frac 0.05
+  SRC_DESC="random games"
+  prepare_data() {
+    $PY -m cwm.data.prepare --source random --out-dir "$DATA_DIR" \
+        --num-random "${NUM_RANDOM:-3000}" --min-plies 10 --max-plies 80 --val-frac 0.05
+  }
 else
   DATA_DIR="${DATA_DIR:-data/lichess}"
   CONFIG="${CONFIG:-configs/small_gpu.yaml}"
   OUT="${OUT:-checkpoints/ar}"
-  echo "== [real] streaming Lichess ${MONTH:?set MONTH=YYYY-MM} =="
-  $PY -m cwm.data.prepare --source lichess --month "$MONTH" --out-dir "$DATA_DIR" \
-      --min-elo "${MIN_ELO:-1600}" --min-plies 10 --max-plies "${MAX_PLIES:-512}" \
-      --max-games "${MAX_GAMES:-200000}" --val-frac 0.02
+  SRC_DESC="Lichess ${MONTH:?set MONTH=YYYY-MM}"
+  prepare_data() {
+    $PY -m cwm.data.prepare --source lichess --month "$MONTH" --out-dir "$DATA_DIR" \
+        --min-elo "${MIN_ELO:-1600}" --min-plies 10 --max-plies "${MAX_PLIES:-512}" \
+        --max-games "${MAX_GAMES:-200000}" --val-frac 0.02
+  }
+fi
+
+# Tokenization is deterministic (month + filters + vocab), so reuse existing shards.
+if [[ -f "$DATA_DIR/meta.json" && "${FORCE:-0}" != "1" ]]; then
+  echo "== data exists at $DATA_DIR, skipping prepare (FORCE=1 to rebuild) =="
+else
+  echo "== preparing $SRC_DESC -> $DATA_DIR =="
+  prepare_data
 fi
 
 echo "== training AR baseline =="
