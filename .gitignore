@@ -17,3 +17,6 @@ __pycache__/
 
 # OS
 .DS_Store
+
+# ...but DO keep small run artifacts under results/ (metrics, logs, plots — never weights)
+!results/**/*.png
