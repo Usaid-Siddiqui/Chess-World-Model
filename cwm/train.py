@@ -41,13 +41,13 @@ from cwm.model.gpt import GPTConfig
 from cwm.utils.config import load_config, pick_device
 
 
-def build_model(arm: str, model_cfg: GPTConfig):
+def build_model(arm: str, model_cfg: GPTConfig, jepa_cfg: dict):
     if arm == "ar":
         return ARModel(model_cfg)
     if arm == "jepa":
-        from cwm.model.jepa import JEPAModel  # Phase 2
+        from cwm.model.jepa import JEPAModel
 
-        return JEPAModel(model_cfg)
+        return JEPAModel(model_cfg, jepa_cfg)
     raise ValueError(f"unknown arm: {arm}")
 
 
@@ -107,7 +107,7 @@ def train(args) -> None:
     val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False)
 
     model_cfg = GPTConfig(vocab_size=train_ds.meta["vocab_size"], **cfg["model"])
-    raw_model = build_model(args.arm, model_cfg).to(device)
+    raw_model = build_model(args.arm, model_cfg, cfg.get("jepa", {})).to(device)
     model = torch.compile(raw_model) if args.compile else raw_model
 
     # Data-relative schedule: derive steps from epochs and the real dataset size.
@@ -145,6 +145,7 @@ def train(args) -> None:
             {
                 "model_state": raw_model.state_dict(),
                 "model_cfg": vars(model_cfg),
+                "jepa_cfg": cfg.get("jepa", {}),
                 "arm": args.arm,
                 "data_meta": train_ds.meta,
                 "step": step,
@@ -201,8 +202,11 @@ def train(args) -> None:
                 best_val = val_loss
                 save_checkpoint(out / "model_best.pt", step + 1, val_loss)
                 tag = "  *best*"
+            extra = ""
+            if hasattr(raw_model, "last_latent_std"):  # JEPA collapse guard
+                extra = f"  latent_std {raw_model.last_latent_std:.3f}"
             log(f"  [eval] step {step+1}  val_loss {val_loss:.4f}  "
-                f"train_loss {last_loss:.4f}{tag}  [saved]")
+                f"train_loss {last_loss:.4f}{tag}{extra}  [saved]")
 
     log(f"done. best val_loss {best_val:.4f}  ->  {out/'model_best.pt'}  (latest {out/'model.pt'})")
     logf.close()

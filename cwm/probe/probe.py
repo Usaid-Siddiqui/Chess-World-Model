@@ -33,7 +33,7 @@ def load_model(checkpoint_path: str, device: torch.device):
     else:
         from cwm.model.jepa import JEPAModel
 
-        model = JEPAModel(cfg)
+        model = JEPAModel(cfg, ckpt.get("jepa_cfg", {}))
     model.load_state_dict(ckpt["model_state"])
     model.to(device).eval()
     return model, ckpt

@@ -21,7 +21,9 @@ train:
   eval_every: 2000         # val loss + checkpoint every N steps (crash-safe; probe externally)
 
 jepa:
-  ema_decay: 0.999
-  rollout_steps: 5
-  predictor_layers: 3
-  vicreg_weight: 0.0
+  ema_decay: 0.999          # EMA teacher; lags ~1/(1-d) steps
+  rollout_steps: 4          # K-step latent unroll (feeds predictions back)
+  predictor_layers: 2       # residual-MLP dynamics blocks
+  predictor_mlp_ratio: 4
+  loss: cosine              # cosine | smooth_l1
+  vicreg_weight: 0.0        # >0 adds variance/covariance anti-collapse term

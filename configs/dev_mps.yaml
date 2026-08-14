@@ -25,4 +25,6 @@ jepa:
   ema_decay: 0.996
   rollout_steps: 3
   predictor_layers: 2
+  predictor_mlp_ratio: 4
+  loss: cosine
   vicreg_weight: 0.0
