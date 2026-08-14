@@ -65,6 +65,38 @@ def collect_features(model, dataset, device, layer=-1, relative=True,
     return X, Y
 
 
+@torch.no_grad()
+def collect_all_layer_features(model, dataset, device, relative=True,
+                              max_positions=60000, batch_size=64):
+    """Like collect_features but gathers *every* layer's hidden states in one forward pass.
+
+    Returns (Xs, Y) where Xs[li] is the feature matrix at layer li (0..n_layer, last = final
+    ln_f output, i.e. what --layer -1 selects), and Y is the shared board labels.
+    """
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
+    feats_per_layer, labs, total = None, [], 0
+    for batch in loader:
+        input_ids = batch["input_ids"].to(device)
+        lengths = batch["length"].tolist()
+        _, hiddens = model.backbone(input_ids, is_causal=True, return_hidden=True)
+        if feats_per_layer is None:
+            feats_per_layer = [[] for _ in range(len(hiddens))]
+        for b, length in enumerate(lengths):
+            tokens = input_ids[b, :length].cpu().numpy()
+            positions, labels = boards.game_labels(tokens, relative=relative, skip_start=True)
+            if len(positions) == 0:
+                continue
+            for li, h in enumerate(hiddens):
+                feats_per_layer[li].append(h[b, positions].float().cpu())
+            labs.append(torch.from_numpy(labels))
+            total += len(positions)
+        if total >= max_positions:
+            break
+    Xs = [torch.cat(f)[:max_positions] for f in feats_per_layer]
+    Y = torch.cat(labs)[:max_positions]
+    return Xs, Y
+
+
 class LinearProbe(nn.Module):
     def __init__(self, dim: int):
         super().__init__()
@@ -136,11 +168,30 @@ def run(args) -> None:
     device = pick_device(args.device)
     model, ckpt = load_model(args.checkpoint, device)
     dataset = GameDataset(args.data_dir, args.split, ctx=ckpt["model_cfg"]["ctx"])
-    print(f"probing {args.checkpoint}  layer={args.layer}  relative={not args.absolute}  "
-          f"device={device}")
+    rel = not args.absolute
 
+    if args.layer_sweep:
+        print(f"layer sweep: {args.checkpoint}  relative={rel}  device={device}")
+        Xs, Y = collect_all_layer_features(model, dataset, device, relative=rel,
+                                           max_positions=args.max_positions)
+        base = majority_baseline(Y)
+        print(f"collected {len(Y)} positions  layers={len(Xs)}  baseline {base*100:.2f}%")
+        best_li, best_acc = 0, -1.0
+        for li, X in enumerate(Xs):
+            acc, _ = train_probe(X, Y, "linear", device, epochs=args.epochs)
+            name = f"layer {li}" + ("  (final = -1)" if li == len(Xs) - 1 else "")
+            print(f"  {name:24s} linear {acc*100:.2f}%")
+            if acc > best_acc:
+                best_li, best_acc = li, acc
+        mlp_acc, _ = train_probe(Xs[best_li], Y, "mlp", device, epochs=args.epochs)
+        print(f"BEST layer {best_li}: linear {best_acc*100:.2f}%  "
+              f"(+{(best_acc-base)*100:.2f} over baseline);  "
+              f"MLP {mlp_acc*100:.2f}%  gap {(mlp_acc-best_acc)*100:.2f} pts")
+        return
+
+    print(f"probing {args.checkpoint}  layer={args.layer}  relative={rel}  device={device}")
     X, Y = collect_features(
-        model, dataset, device, layer=args.layer, relative=not args.absolute,
+        model, dataset, device, layer=args.layer, relative=rel,
         max_positions=args.max_positions,
     )
     print(f"collected {len(X)} positions  dim={X.shape[1]}")
@@ -162,6 +213,8 @@ def main() -> None:
     ap.add_argument("--data-dir", required=True)
     ap.add_argument("--split", default="val")
     ap.add_argument("--layer", type=int, default=-1)
+    ap.add_argument("--layer-sweep", action="store_true",
+                    help="probe every layer in one pass and report the best")
     ap.add_argument("--absolute", action="store_true", help="use absolute (white/black) labels")
     ap.add_argument("--max-positions", type=int, default=60000)
     ap.add_argument("--epochs", type=int, default=30)
