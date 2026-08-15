@@ -132,36 +132,37 @@ def majority_baseline(Y: torch.Tensor) -> float:
     return acc / boards.NUM_SQUARES
 
 
+def fit_probe(X, Y, kind, device, epochs=30, batch_size=4096, lr=1e-3):
+    """Train a probe on all of (X, Y) and return the module (usable as a board decoder)."""
+    dim = X.shape[1]
+    probe = (LinearProbe(dim) if kind == "linear" else MLPProbe(dim)).to(device)
+    opt = torch.optim.AdamW(probe.parameters(), lr=lr, weight_decay=1e-4)
+    X, Y = X.to(device), Y.to(device)
+    probe.train()
+    for _ in range(epochs):
+        idx = torch.randperm(len(X), device=device)
+        for i in range(0, len(X), batch_size):
+            b = idx[i:i + batch_size]
+            logits = probe(X[b])
+            loss = F.cross_entropy(logits.reshape(-1, boards.NUM_CLASSES), Y[b].reshape(-1))
+            opt.zero_grad(set_to_none=True)
+            loss.backward()
+            opt.step()
+    probe.eval()
+    return probe
+
+
 def train_probe(X, Y, kind, device, epochs=30, batch_size=4096, lr=1e-3, val_frac=0.1):
     n = len(X)
     perm = torch.randperm(n)
     X, Y = X[perm], Y[perm]
     n_val = int(n * val_frac)
-    Xtr, Ytr, Xva, Yva = X[n_val:], Y[n_val:], X[:n_val], Y[:n_val]
-
-    dim = X.shape[1]
-    probe = (LinearProbe(dim) if kind == "linear" else MLPProbe(dim)).to(device)
-    opt = torch.optim.AdamW(probe.parameters(), lr=lr, weight_decay=1e-4)
-
-    Xtr, Ytr = Xtr.to(device), Ytr.to(device)
-    Xva, Yva = Xva.to(device), Yva.to(device)
-    for _ in range(epochs):
-        idx = torch.randperm(len(Xtr), device=device)
-        for i in range(0, len(Xtr), batch_size):
-            b = idx[i:i + batch_size]
-            logits = probe(Xtr[b])
-            loss = F.cross_entropy(logits.reshape(-1, boards.NUM_CLASSES), Ytr[b].reshape(-1))
-            opt.zero_grad(set_to_none=True)
-            loss.backward()
-            opt.step()
-
-    probe.eval()
+    probe = fit_probe(X[n_val:], Y[n_val:], kind, device, epochs, batch_size, lr)
+    Xva, Yva = X[:n_val].to(device), Y[:n_val].to(device)
     with torch.no_grad():
         preds = probe(Xva).argmax(-1)  # (N, 64)
         correct = (preds == Yva).float()
-        mean_acc = correct.mean().item()
-        per_square = correct.mean(0).cpu().numpy()  # (64,)
-    return mean_acc, per_square
+        return correct.mean().item(), correct.mean(0).cpu().numpy()
 
 
 def run(args) -> None:

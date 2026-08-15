@@ -140,3 +140,12 @@ class JEPAModel(nn.Module):
         """Student hidden states at a layer — the probing interface, identical to ARModel."""
         _, hiddens = self.backbone(input_ids, is_causal=True, return_hidden=True)
         return hiddens[layer]
+
+    @torch.no_grad()
+    def encode(self, input_ids: torch.Tensor) -> torch.Tensor:
+        """Student final-layer latents ``s_t`` — the space the predictor advances (drift)."""
+        return self.backbone(input_ids, is_causal=True)
+
+    def step(self, s: torch.Tensor, action_ids: torch.Tensor) -> torch.Tensor:
+        """One latent-dynamics step: ``g(s_t, a_t) -> s^_{t+1}`` given action token ids."""
+        return self.predictor(s, self.action_emb(action_ids))
