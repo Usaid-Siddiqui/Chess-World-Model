@@ -42,13 +42,43 @@ JEPA also pushes its best (weak) board rep to the **middle** layers and loses it
 final layer — the opposite of AR, whose next-token objective needs the board sharpest at the
 end. Consistent with the two objectives.
 
-## Next
+## Run 2 — VICReg 0.1 (`--vicreg 0.1`)
 
-- **Run 2: `--vicreg 0.1`** (and maybe 1.0) to fight the variance collapse. If the probe
-  climbs toward 99%, run 1's weakness was mostly collapse; if it stays ~77%, it's a real
-  limit of the objective. Either is a clean result.
-- Regardless of static fidelity, JEPA has an explicit action-conditioned dynamics `g`, so
-  **Phase 3 (rollout drift)** is where it may still win — worse static board, but slower
-  drift over multi-step latent rollouts.
+VICReg **fixed the collapse**: `latent_std` held at **1.001** all run (vs 0.545). Cosine loss
+settled higher (~0.032 vs 0.0014) — expected, since the low-variance shortcut is now blocked.
 
-Artifacts: `metrics.csv`, `train.log`. Checkpoint kept on the server.
+| layer | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |
+|---|---|---|---|---|---|---|---|---|---|
+| linear % | 75.64 | 78.51 | 80.14 | **80.27** | 79.88 | 79.74 | 79.39 | 78.96 | 79.02 |
+
+Best layer 3: linear **80.27%**, MLP **87.39%**, gap **7.12 pts**.
+
+## Verdict (three-way)
+
+| | AR | JEPA v1 (no VICReg) | JEPA v2 (VICReg 0.1) |
+|---|---|---|---|
+| latent_std (end) | — | 0.545 (collapsing) | 1.001 (healthy) |
+| best linear | **99.01%** (L8) | 77.06% (L3) | 80.27% (L3) |
+| MLP at best | 99.06% | 81.15% | 87.39% |
+| linearity gap | 0.06 | 4.09 | 7.12 |
+
+- **The gap is the objective, not collapse.** With collapse eliminated (std 1.0), JEPA still
+  tops out ~80% linear / 87% MLP vs AR's 99%/99%. VICReg bought only +3 linear / +6 MLP.
+- **VICReg → more present but more tangled**: MLP up to 87% (more board info recoverable),
+  yet the linearity gap *widened* to 7.12 (less of it linearly accessible). AR's board is
+  complete *and* linear; JEPA's is partial *and* tangled.
+- **JEPA peaks mid-stack (layer 3)**, fading toward the final layer — opposite of AR.
+
+**Conclusion:** on chess, next-token prediction builds a cleaner, more complete, more linear
+internal board than pure latent-prediction — the strong form of "chess is a bad application
+of JEPA," demonstrated with the ground-truth microscope after ruling out collapse.
+
+## Next — Phase 3 (the fair rematch)
+
+Static fidelity is only half the story. JEPA has an explicit action-conditioned dynamics `g`
+that AR lacks. Phase 3 (`cwm/probe/drift.py`): unroll `g` k steps in latent space on real
+actions, decode via the frozen probe, diff vs the true board at t+k. JEPA may drift *slower*
+than an AR self-rollout even though its static board is worse — that's the property it was
+actually built for, and where it could still win.
+
+Artifacts (both runs): `metrics.csv`, `train.log`. Checkpoints kept on the server.
