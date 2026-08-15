@@ -28,3 +28,4 @@ jepa:
   predictor_mlp_ratio: 4
   loss: cosine
   vicreg_weight: 0.0
+  inverse_weight: 0.0

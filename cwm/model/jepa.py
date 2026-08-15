@@ -78,7 +78,20 @@ class JEPAModel(nn.Module):
             n_layers=int(jepa_cfg.get("predictor_layers", 2)),
             mlp_ratio=int(jepa_cfg.get("predictor_mlp_ratio", 4)),
         )
+
+        # Inverse dynamics: identify the move a_t connecting (s_{t-1}, s_t). Forces the
+        # latent to encode both boards (you can't name the move without them). Built only
+        # when enabled, so older checkpoints load unchanged.
+        self.inverse_weight = float(jepa_cfg.get("inverse_weight", 0.0))
+        self.vocab_size = model_cfg.vocab_size
+        if self.inverse_weight > 0:
+            hid = 2 * model_cfg.n_embd
+            self.inverse_head = nn.Sequential(
+                nn.Linear(2 * model_cfg.n_embd, hid), nn.GELU(),
+                nn.Linear(hid, model_cfg.vocab_size),
+            )
         self.last_latent_std = float("nan")
+        self.last_inverse_acc = float("nan")
 
     def train(self, mode: bool = True):
         """Keep the teacher in eval() always — deterministic targets, no dropout."""
@@ -117,7 +130,24 @@ class JEPAModel(nn.Module):
             self.last_latent_std = flat.std(dim=0).mean().item() if flat.numel() else float("nan")
         if self.vicreg_weight > 0:
             loss = loss + self.vicreg_weight * self._vicreg(s[real])
+        if self.inverse_weight > 0:
+            loss = loss + self.inverse_weight * self._inverse_loss(s, input_ids, real)
         return loss
+
+    def _inverse_loss(self, s, input_ids, real) -> torch.Tensor:
+        """Predict move a_t = m_t from the latent pair (s_{t-1}, s_t)."""
+        pair = torch.cat([s[:, :-1], s[:, 1:]], dim=-1)  # (B, T-1, 2C)
+        logits = self.inverse_head(pair)                  # (B, T-1, V)
+        target = input_ids[:, 1:]                         # move at position t
+        mask = real[:, 1:]
+        ce = F.cross_entropy(
+            logits.reshape(-1, self.vocab_size), target.reshape(-1), reduction="none"
+        ).reshape(target.shape)
+        denom = mask.sum().clamp_min(1.0)
+        with torch.no_grad():
+            pred = logits.argmax(-1)
+            self.last_inverse_acc = (((pred == target) & mask).sum() / denom).item()
+        return (ce * mask).sum() / denom
 
     def _latent_loss(self, pred, tgt, mask) -> torch.Tensor:
         if self.loss_kind == "smooth_l1":

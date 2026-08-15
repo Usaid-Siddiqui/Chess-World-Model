@@ -27,3 +27,4 @@ jepa:
   predictor_mlp_ratio: 4
   loss: cosine              # cosine | smooth_l1
   vicreg_weight: 0.0        # >0 adds variance/covariance anti-collapse term
+  inverse_weight: 0.0       # >0 adds inverse-dynamics loss (predict move from latent pair)

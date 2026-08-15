@@ -66,3 +66,19 @@ def test_hidden_states_shape_matches_probe_interface():
     ids = _batch(B=2, T=16)
     h = model.hidden_states(ids, layer=-1)
     assert h.shape == (2, 16, CFG.n_embd)
+
+
+def test_inverse_dynamics_adds_loss_and_head():
+    jcfg = {**JCFG, "inverse_weight": 1.0}
+    model = JEPAModel(CFG, jcfg)
+    assert hasattr(model, "inverse_head")  # built only when enabled
+    loss = model.compute_loss(_batch())
+    assert torch.isfinite(loss) and loss.requires_grad
+    loss.backward()
+    assert any(p.grad is not None for p in model.inverse_head.parameters())
+    assert 0.0 <= model.last_inverse_acc <= 1.0  # accuracy logged for leakage watch
+
+
+def test_inverse_off_builds_no_head():
+    model = JEPAModel(CFG, {**JCFG, "inverse_weight": 0.0})
+    assert not hasattr(model, "inverse_head")  # older checkpoints load unchanged

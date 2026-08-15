@@ -110,6 +110,8 @@ def train(args) -> None:
     jepa_cfg = dict(cfg.get("jepa", {}))
     if args.vicreg is not None:  # CLI override for the anti-collapse experiment
         jepa_cfg["vicreg_weight"] = args.vicreg
+    if args.inverse is not None:  # CLI override for the inverse-dynamics experiment
+        jepa_cfg["inverse_weight"] = args.inverse
     raw_model = build_model(args.arm, model_cfg, jepa_cfg).to(device)
     model = torch.compile(raw_model) if args.compile else raw_model
 
@@ -208,6 +210,9 @@ def train(args) -> None:
             extra = ""
             if hasattr(raw_model, "last_latent_std"):  # JEPA collapse guard
                 extra = f"  latent_std {raw_model.last_latent_std:.3f}"
+            inv_acc = getattr(raw_model, "last_inverse_acc", float("nan"))
+            if inv_acc == inv_acc:  # not NaN → inverse dynamics is on
+                extra += f"  inv_acc {inv_acc:.3f}"
             log(f"  [eval] step {step+1}  val_loss {val_loss:.4f}  "
                 f"train_loss {last_loss:.4f}{tag}{extra}  [saved]")
 
@@ -227,6 +232,8 @@ def main() -> None:
     ap.add_argument("--compile", action="store_true", help="wrap model in torch.compile")
     ap.add_argument("--vicreg", type=float, default=None,
                     help="override jepa.vicreg_weight (anti-collapse experiment)")
+    ap.add_argument("--inverse", type=float, default=None,
+                    help="override jepa.inverse_weight (inverse-dynamics experiment)")
     train(ap.parse_args())
 
 
