@@ -44,10 +44,19 @@ board** but nothing to roll; latent-prediction gives a **fuzzier board** but a *
 rollable dynamics** (the planning-relevant property AR can't offer). Chess let us measure
 both against ground truth exactly.
 
-## Optional follow-up
+## Contrast: collapsed (no-VICReg) model
 
-Run drift on the collapsed `checkpoints/jepa` (no-VICReg): if it is *also* ≈0 drift, some
-flatness is degenerate (a low-variance latent is trivially predictable); contrast confirms
-the VICReg model's ≈0 drift is a real dynamics property, not degeneracy.
+Drift on `checkpoints/jepa` (collapsed, `latent_std=0.545`) is **also ≈0 — even flatter**
+(drift ~0.00–0.09, noise around zero; static k=0 = 72.0%). Reading:
 
-Plot: `results/phase3-drift-jepa-vicreg.png`.
+- The collapsed model's flat drift is partly **degenerate** — a low-variance, low-information
+  latent is trivially rollable (little for `g` to lose).
+- So the **VICReg model is the meaningful demonstration**: it hits ≈0 drift on a *full-variance*
+  (std=1.0), more-informative latent (higher static + MLP), where staying faithful is non-trivial.
+  The contrast confirms its faithful dynamics is genuine, not degeneracy.
+
+**Honest tempering:** ≈0 one-step drift is partly expected — `g` directly optimizes next-latent
+prediction and chess transitions are smooth. The non-trivial finding is the **absence of
+compounding error** out to 4× the training horizon (k=16 vs K=4), on the healthy latent.
+
+Plots: `results/phase3-drift-jepa-vicreg.png`, `results/phase3-drift-jepa-nocollapse.png`.
