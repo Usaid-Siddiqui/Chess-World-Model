@@ -25,6 +25,9 @@ jepa:
   rollout_steps: 4          # K-step latent unroll (feeds predictions back)
   predictor_layers: 2       # residual-MLP dynamics blocks
   predictor_mlp_ratio: 4
-  loss: cosine              # cosine | smooth_l1
+  loss: cosine              # cosine | smooth_l1 | contrastive (leak-resistant action-InfoNCE)
   vicreg_weight: 0.0        # >0 adds variance/covariance anti-collapse term
   inverse_weight: 0.0       # >0 adds inverse-dynamics loss (predict move from latent pair)
+  temperature: 0.1          # contrastive softmax temperature
+  contrastive_negs: 63      # negative actions per position (contrastive loss)
+  contrastive_max: 1024     # positions sampled per step (contrastive loss)

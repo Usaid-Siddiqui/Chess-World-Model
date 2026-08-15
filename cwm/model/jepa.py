@@ -90,8 +90,15 @@ class JEPAModel(nn.Module):
                 nn.Linear(2 * model_cfg.n_embd, hid), nn.GELU(),
                 nn.Linear(hid, model_cfg.vocab_size),
             )
+        # Contrastive-forward (leak-resistant): identify the true action by which
+        # g(s_{t-1}, a) lands nearest the true next latent. Query input is s_{t-1} (before
+        # the move), so there is no last-token to read off — unlike the inverse head.
+        self.temperature = float(jepa_cfg.get("temperature", 0.1))
+        self.contrastive_negs = int(jepa_cfg.get("contrastive_negs", 63))
+        self.contrastive_max = int(jepa_cfg.get("contrastive_max", 1024))
         self.last_latent_std = float("nan")
         self.last_inverse_acc = float("nan")
+        self.last_contrastive_acc = float("nan")
 
     def train(self, mode: bool = True):
         """Keep the teacher in eval() always — deterministic targets, no dropout."""
@@ -107,23 +114,24 @@ class JEPAModel(nn.Module):
 
     def compute_loss(self, input_ids: torch.Tensor) -> torch.Tensor:
         B, T = input_ids.shape
-        K = min(self.K, T - 1)
         s = self.backbone(input_ids, is_causal=True)  # (B,T,C) student, grad
         with torch.no_grad():
             s_tgt = self.teacher(input_ids, is_causal=True)  # (B,T,C) teacher, stop-grad
-        a = self.action_emb(input_ids)  # (B,T,C)
         real = input_ids != moves.PAD_ID  # (B,T) True for BOS+moves, False for padding
 
-        n = T - K
-        pred = s[:, :n, :]  # start latents s_t, t = 0..n-1
-        total, count = 0.0, 0
-        for k in range(1, K + 1):
-            pred = self.predictor(pred, a[:, k:k + n, :])  # -> s^_{t+k}
-            tgt = s_tgt[:, k:k + n, :]                     # teacher s~_{t+k}
-            mask = real[:, k:k + n]                        # target position real?
-            total = total + self._latent_loss(pred, tgt, mask)
-            count += 1
-        loss = total / max(count, 1)
+        if self.loss_kind == "contrastive":
+            loss = self._contrastive_forward_loss(s, s_tgt, input_ids, real)
+        else:
+            a = self.action_emb(input_ids)  # (B,T,C)
+            K = min(self.K, T - 1)
+            n = T - K
+            pred = s[:, :n, :]  # start latents s_t, t = 0..n-1
+            total, count = 0.0, 0
+            for k in range(1, K + 1):
+                pred = self.predictor(pred, a[:, k:k + n, :])  # -> s^_{t+k}
+                total = total + self._latent_loss(pred, s_tgt[:, k:k + n, :], real[:, k:k + n])
+                count += 1
+            loss = total / max(count, 1)
 
         with torch.no_grad():
             flat = s[real]
@@ -133,6 +141,36 @@ class JEPAModel(nn.Module):
         if self.inverse_weight > 0:
             loss = loss + self.inverse_weight * self._inverse_loss(s, input_ids, real)
         return loss
+
+    def _contrastive_forward_loss(self, s, s_tgt, input_ids, real) -> torch.Tensor:
+        """Action-InfoNCE: among candidate actions applied to s_{t-1} via g, the true one's
+        prediction must land nearest the true next latent s_t. Leak-resistant — the query
+        input s_{t-1} does not contain move t; s_t is only a (stop-grad) target."""
+        s_prev = s[:, :-1]              # (B,T-1,C) latent before move t
+        tgt = s_tgt[:, 1:]             # (B,T-1,C) teacher latent after move t (stop-grad)
+        a_true = input_ids[:, 1:]      # (B,T-1) the move token m_t
+        idx = real[:, 1:].nonzero(as_tuple=False)
+        if idx.shape[0] < 2:
+            return s.sum() * 0.0
+        M = min(idx.shape[0], self.contrastive_max)
+        sel = idx[torch.randperm(idx.shape[0], device=s.device)[:M]]
+        sp = s_prev[sel[:, 0], sel[:, 1]]  # (M,C)
+        st = F.normalize(tgt[sel[:, 0], sel[:, 1]], dim=-1)  # (M,C) target
+        at = a_true[sel[:, 0], sel[:, 1]]  # (M,) true action
+
+        # Negatives: other true actions from the batch (plausible moves), true at col 0.
+        neg = at[torch.randint(0, M, (M, self.contrastive_negs), device=s.device)]
+        cand = torch.cat([at[:, None], neg], dim=1)          # (M, K+1)
+        q = self.predictor(sp[:, None, :].expand(-1, cand.shape[1], -1),
+                           self.action_emb(cand))            # (M, K+1, C)
+        sim = torch.einsum("mkc,mc->mk", F.normalize(q, dim=-1), st) / self.temperature
+        collision = cand == at[:, None]
+        collision[:, 0] = False  # keep the true positive
+        sim = sim.masked_fill(collision, -1e9)               # drop accidental false negatives
+        labels = torch.zeros(M, dtype=torch.long, device=s.device)
+        with torch.no_grad():
+            self.last_contrastive_acc = (sim.argmax(-1) == 0).float().mean().item()
+        return F.cross_entropy(sim, labels)
 
     def _inverse_loss(self, s, input_ids, real) -> torch.Tensor:
         """Predict move a_t = m_t from the latent pair (s_{t-1}, s_t)."""

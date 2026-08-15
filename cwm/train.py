@@ -112,6 +112,8 @@ def train(args) -> None:
         jepa_cfg["vicreg_weight"] = args.vicreg
     if args.inverse is not None:  # CLI override for the inverse-dynamics experiment
         jepa_cfg["inverse_weight"] = args.inverse
+    if args.loss is not None:  # CLI override: cosine | smooth_l1 | contrastive
+        jepa_cfg["loss"] = args.loss
     raw_model = build_model(args.arm, model_cfg, jepa_cfg).to(device)
     model = torch.compile(raw_model) if args.compile else raw_model
 
@@ -213,6 +215,9 @@ def train(args) -> None:
             inv_acc = getattr(raw_model, "last_inverse_acc", float("nan"))
             if inv_acc == inv_acc:  # not NaN → inverse dynamics is on
                 extra += f"  inv_acc {inv_acc:.3f}"
+            con_acc = getattr(raw_model, "last_contrastive_acc", float("nan"))
+            if con_acc == con_acc:  # not NaN → contrastive loss is on (leak-free signal)
+                extra += f"  con_acc {con_acc:.3f}"
             log(f"  [eval] step {step+1}  val_loss {val_loss:.4f}  "
                 f"train_loss {last_loss:.4f}{tag}{extra}  [saved]")
 
@@ -234,6 +239,8 @@ def main() -> None:
                     help="override jepa.vicreg_weight (anti-collapse experiment)")
     ap.add_argument("--inverse", type=float, default=None,
                     help="override jepa.inverse_weight (inverse-dynamics experiment)")
+    ap.add_argument("--loss", choices=["cosine", "smooth_l1", "contrastive"], default=None,
+                    help="override jepa.loss (contrastive = leak-resistant action-InfoNCE)")
     train(ap.parse_args())
 
 

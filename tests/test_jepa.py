@@ -82,3 +82,15 @@ def test_inverse_dynamics_adds_loss_and_head():
 def test_inverse_off_builds_no_head():
     model = JEPAModel(CFG, {**JCFG, "inverse_weight": 0.0})
     assert not hasattr(model, "inverse_head")  # older checkpoints load unchanged
+
+
+def test_contrastive_loss_is_finite_and_leak_free_signal():
+    jcfg = {**JCFG, "loss": "contrastive", "contrastive_negs": 8, "contrastive_max": 64}
+    model = JEPAModel(CFG, jcfg)
+    loss = model.compute_loss(_batch(B=6, T=24))
+    assert torch.isfinite(loss) and loss.requires_grad
+    loss.backward()
+    # Gradients reach the encoder and predictor (the board pressure path).
+    assert model.backbone.tok_emb.weight.grad is not None
+    assert any(p.grad is not None for p in model.predictor.parameters())
+    assert 0.0 <= model.last_contrastive_acc <= 1.0
