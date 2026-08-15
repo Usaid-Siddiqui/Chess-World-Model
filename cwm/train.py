@@ -107,7 +107,10 @@ def train(args) -> None:
     val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False)
 
     model_cfg = GPTConfig(vocab_size=train_ds.meta["vocab_size"], **cfg["model"])
-    raw_model = build_model(args.arm, model_cfg, cfg.get("jepa", {})).to(device)
+    jepa_cfg = dict(cfg.get("jepa", {}))
+    if args.vicreg is not None:  # CLI override for the anti-collapse experiment
+        jepa_cfg["vicreg_weight"] = args.vicreg
+    raw_model = build_model(args.arm, model_cfg, jepa_cfg).to(device)
     model = torch.compile(raw_model) if args.compile else raw_model
 
     # Data-relative schedule: derive steps from epochs and the real dataset size.
@@ -145,7 +148,7 @@ def train(args) -> None:
             {
                 "model_state": raw_model.state_dict(),
                 "model_cfg": vars(model_cfg),
-                "jepa_cfg": cfg.get("jepa", {}),
+                "jepa_cfg": jepa_cfg,
                 "arm": args.arm,
                 "data_meta": train_ds.meta,
                 "step": step,
@@ -222,6 +225,8 @@ def main() -> None:
     ap.add_argument("--device", default="auto")
     ap.add_argument("--num-workers", type=int, default=4)
     ap.add_argument("--compile", action="store_true", help="wrap model in torch.compile")
+    ap.add_argument("--vicreg", type=float, default=None,
+                    help="override jepa.vicreg_weight (anti-collapse experiment)")
     train(ap.parse_args())
 
 
