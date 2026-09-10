@@ -54,6 +54,33 @@ class ARPlayer:
         return chess.Move.from_uci(moves.decode_id(idx))
 
 
+class JEPAPlanner:
+    """Plays by 1-ply latent lookahead: for each legal move, roll the dynamics `g` forward
+    one step in latent space and pick the move whose resulting latent the value head scores
+    worst for the opponent (who is to move in that resulting position).
+
+    This is the actual test of whether JEPA's world model is *useful*: moves are chosen by
+    imagining consequences through `g`, never by re-encoding the true next board."""
+
+    def __init__(self, model, value_head, device):
+        self.model = model.eval()
+        self.value_head = value_head.eval()
+        self.device = device
+        self.ctx = model.cfg.ctx
+
+    @torch.no_grad()
+    def select_move(self, board: chess.Board) -> chess.Move:
+        ids = [moves.BOS_ID] + [moves.encode_move(m.uci()) for m in board.move_stack]
+        ids = ids[-self.ctx:]
+        x = torch.tensor(ids, device=self.device, dtype=torch.long)[None, :]
+        s_root = self.model.encode(x)[0, -1]  # (C,) latent of the current position
+        legal = list(board.legal_moves)
+        a_ids = torch.tensor([moves.encode_move(m.uci()) for m in legal], device=self.device)
+        child = self.model.step(s_root[None, :].expand(len(legal), -1), a_ids)  # (N, C)
+        opp_value = self.value_head(child)  # opponent-to-move value of each resulting latent
+        return legal[int(opp_value.argmin())]  # minimize the opponent's value
+
+
 def play_game(white, black, max_plies: int = 300) -> tuple[str, chess.Board]:
     """Play one game; return (result, final board). A ply cap counts as a draw."""
     board = chess.Board()

@@ -14,19 +14,27 @@ Usage:
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 
-from cwm.play import ARPlayer, RandomPlayer, play_game
+from cwm.play import ARPlayer, JEPAPlanner, RandomPlayer, play_game
 from cwm.probe.probe import load_model
 from cwm.utils.config import pick_device
+from cwm.value import load_value_head
 
 
 def _make_player(spec: str, device, temperature: float):
+    """spec = 'random' | AR checkpoint (plays by policy) | JEPA checkpoint (latent planner).
+    A JEPA checkpoint auto-loads the value head saved beside it (`value_head.pt`)."""
     if spec == "random":
         return RandomPlayer()
-    model, _ = load_model(spec, device)  # a checkpoint path
-    if not hasattr(model, "cfg"):
-        raise SystemExit(f"{spec}: not an AR checkpoint (no move policy to play with)")
-    return ARPlayer(model, device, temperature=temperature)
+    model, ckpt = load_model(spec, device)
+    if ckpt["arm"] == "ar":
+        return ARPlayer(model, device, temperature=temperature)
+    vh_path = Path(spec).parent / "value_head.pt"
+    if not vh_path.exists():
+        raise SystemExit(f"JEPA player needs a value head: run  python -m cwm.value "
+                         f"--checkpoint {spec} --data-dir <data>  (writes {vh_path})")
+    return JEPAPlanner(model, load_value_head(vh_path, device), device)
 
 
 def match(player, opponent, n_games: int, max_plies: int) -> dict:
@@ -48,12 +56,9 @@ def match(player, opponent, n_games: int, max_plies: int) -> dict:
 
 def run(args):
     device = pick_device(args.device)
-    model, ckpt = load_model(args.checkpoint, device)
-    if not hasattr(model, "cfg"):
-        raise SystemExit("--checkpoint must be an AR model (JEPA has no native move policy)")
-    player = ARPlayer(model, device, temperature=args.temperature)
+    player = _make_player(args.checkpoint, device, args.temperature)
     opponent = _make_player(args.opponent, device, args.temperature)
-    print(f"{args.checkpoint} (arm={ckpt['arm']})  vs  {args.opponent}  "
+    print(f"{args.checkpoint}  vs  {args.opponent}  "
           f"[{args.n_games} games, temp={args.temperature}]")
     r = match(player, opponent, args.n_games, args.max_plies)
     print(f"W {r['win']}  D {r['draw']}  L {r['loss']}  ->  score {r['score']*100:.1f}%")
@@ -61,7 +66,8 @@ def run(args):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--checkpoint", required=True, help="AR checkpoint to evaluate")
+    ap.add_argument("--checkpoint", required=True,
+                    help="checkpoint to evaluate: AR (plays by policy) or JEPA (latent planner)")
     ap.add_argument("--opponent", default="random", help="'random' or a checkpoint path")
     ap.add_argument("--n-games", type=int, default=100)
     ap.add_argument("--max-plies", type=int, default=300)
