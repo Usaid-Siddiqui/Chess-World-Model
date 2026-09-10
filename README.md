@@ -93,7 +93,8 @@ are held out of the model's input.
 ## Results
 
 Real Lichess run (2016-04, ~1M games, ~26M-param backbone). Board = layer-swept linear
-probe (relative encoding), baseline 63.88%. Full write-ups in [`results/`](results/).
+probe (relative encoding), baseline 63.88%. **One-page synthesis:
+[`results/SUMMARY.md`](results/SUMMARY.md)**; full write-ups in [`results/`](results/).
 
 | model | best linear board | linearity gap | latent rollout (16 steps) |
 |---|---|---|---|

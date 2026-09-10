@@ -23,11 +23,18 @@ that *probes* the board at 90% is not thereby *usable* for play through this sch
 
 The bottleneck is the value readout (**corr 0.441**, despite a 90% board probe). Material is a
 weighted **sum over 64 squares**, so per-square probe errors *accumulate*: at 90% per-square
-(~6 wrong squares/position) the material estimate is very noisy; AR's 99% (~0.6 wrong) would
-give a clean value. **The 9-point board gap (99 vs 90) becomes a large value-quality gap for
-any aggregate quantity** — so a "90% board" is far less useful for planning than a "99% board."
-The planner then ranks moves by a noisy signal → near-random play (shuffling → 177 draws).
-1-ply material-greedy is also a weak strategy even with a perfect value.
+(~6 wrong squares/position) the material estimate is very noisy; at 99% (~0.6 wrong) it is
+clean. **Confirmed directly** — a value head on each model's latent:
+
+| model (board probe) | value MSE (pawns²) | value corr |
+|---|---|---|
+| AR (99%) | 2.93 | **0.896** |
+| JEPA `jepa_con` (90%) | 12.42 | **0.441** |
+
+**The 9-point board gap becomes a ~2× value-quality gap**, because value aggregates over the
+board. So a "90% board" is far less useful for planning than a "99% board." The planner then
+ranks moves by a noisy signal → near-random play (shuffling → 177 draws). 1-ply
+material-greedy is also a weak strategy even with a perfect value.
 
 ## Caveats / what this does and doesn't settle
 
