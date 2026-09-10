@@ -90,12 +90,35 @@ MODE=real MONTH=2016-04 MAX_GAMES=200000 MIN_ELO=1600 bash scripts/run_phase1.sh
 Boards are never fed to the model — the probe reconstructs them on demand, so the labels
 are held out of the model's input.
 
+## Results
+
+Real Lichess run (2016-04, ~1M games, ~26M-param backbone). Board = layer-swept linear
+probe (relative encoding), baseline 63.88%. Full write-ups in [`results/`](results/).
+
+| model | best linear board | linearity gap | rollout drift (16 steps) |
+|---|---|---|---|
+| **AR baseline** (next-token) | **99.0%** | 0.06 | — (no latent dynamics) |
+| JEPA (pure latent-prediction) | 80.3% | 7.1 | ≈0 (faithful) |
+| JEPA + contrastive objective | **90.4%** | 0.65 | — |
+
+Findings:
+- **AR builds the most accurate static board** (99%, complete and linearly stored) — but has
+  no rollable dynamics.
+- **Pure JEPA is fuzzier** (80%, tangled) yet its action-conditioned dynamics rolls forward
+  with **≈0 drift** out to 4× its training horizon — the planning-relevant property AR lacks.
+- **The JEPA gap is largely an objective problem:** a leak-free *contrastive* target lifts the
+  board to 90% with near-AR linear structure — a better latent objective, not move-grounding.
+
+Detail: [`phase1-ar-2016-04.md`](results/phase1-ar-2016-04.md),
+[`phase2-jepa-2016-04.md`](results/phase2-jepa-2016-04.md),
+[`phase2-objectives.md`](results/phase2-objectives.md),
+[`phase3-drift.md`](results/phase3-drift.md).
+
 ## Status
 
-- [x] **Phase 1** — move tokenizer, data pipeline, backbone, AR baseline, probe harness.
-      Validated end-to-end; the dev run clears the no-information baseline by a wide margin.
-- [ ] **Phase 2** — JEPA arm + AR-vs-JEPA fidelity / linearity comparison.
-- [ ] **Phase 3** — rollout-drift experiment + comparison plots.
+- [x] **Phase 1** — tokenizer, data pipeline, backbone, AR baseline (99.0% board probe), harness.
+- [x] **Phase 2** — JEPA arm + AR-vs-JEPA comparison + objective ablations (contrastive → 90.4%).
+- [x] **Phase 3** — rollout-drift experiment (JEPA dynamics ≈0 drift).
 
 A play/eval module (legal-move-masked sampling + Stockfish eval) is a clean later add-on:
 tokenization is move-level and `cwm.moves.legal_move_mask` already exists, so no changes to
