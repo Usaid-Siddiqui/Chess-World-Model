@@ -95,17 +95,19 @@ are held out of the model's input.
 Real Lichess run (2016-04, ~1M games, ~26M-param backbone). Board = layer-swept linear
 probe (relative encoding), baseline 63.88%. Full write-ups in [`results/`](results/).
 
-| model | best linear board | linearity gap | rollout drift (16 steps) |
+| model | best linear board | linearity gap | latent rollout (16 steps) |
 |---|---|---|---|
-| **AR baseline** (next-token) | **99.0%** | 0.06 | — (no latent dynamics) |
-| JEPA (pure latent-prediction) | 80.3% | 7.1 | ≈0 (faithful) |
+| **AR baseline** (next-token) | **99.0%** | 0.06 | n/a (no latent dynamics fn) |
+| JEPA (pure latent-prediction) | 80.3% | 7.1 | self-consistent (≈0 drift vs own encoder) |
 | JEPA + contrastive objective | **90.4%** | 0.65 | — |
 
 Findings:
-- **AR builds the most accurate static board** (99%, complete and linearly stored) — but has
-  no rollable dynamics.
-- **Pure JEPA is fuzzier** (80%, tangled) yet its action-conditioned dynamics rolls forward
-  with **≈0 drift** out to 4× its training horizon — the planning-relevant property AR lacks.
+- **AR builds the most accurate static board** — 99%, complete and linearly stored.
+- **Pure JEPA is fuzzier** (80%, tangled). Its action-conditioned dynamics `g` rolls forward
+  *self-consistently* (≈0 drift vs its own encoder, out to 4× its training horizon) — a
+  faithfulness result, **not** a demonstrated edge over AR: driven by the same real moves, AR
+  re-encoding holds a ~99% board vs JEPA's ~76% latent rollout. Whether latent rollout buys a
+  *planning* advantage is untested (Phase 4).
 - **The JEPA gap is largely an objective problem:** a leak-free *contrastive* target lifts the
   board to 90% with near-AR linear structure — a better latent objective, not move-grounding.
 
@@ -118,11 +120,10 @@ Detail: [`phase1-ar-2016-04.md`](results/phase1-ar-2016-04.md),
 
 - [x] **Phase 1** — tokenizer, data pipeline, backbone, AR baseline (99.0% board probe), harness.
 - [x] **Phase 2** — JEPA arm + AR-vs-JEPA comparison + objective ablations (contrastive → 90.4%).
-- [x] **Phase 3** — rollout-drift experiment (JEPA dynamics ≈0 drift).
-
-A play/eval module (legal-move-masked sampling + Stockfish eval) is a clean later add-on:
-tokenization is move-level and `cwm.moves.legal_move_mask` already exists, so no changes to
-the model, data, or tokenizer are needed.
+- [x] **Phase 3** — rollout-drift experiment (JEPA dynamics ≈0 drift, self-consistent).
+- [ ] **Phase 4** — play/eval: can these world models actually *play*? AR via its move
+      policy; JEPA via latent planning. Tests whether the encoded world is *useful*, and
+      settles the latent-rollout-vs-AR question. In progress (`cwm/play.py`, `cwm/eval.py`).
 
 ## Tests
 
