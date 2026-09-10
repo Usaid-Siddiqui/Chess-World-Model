@@ -121,9 +121,11 @@ Detail: [`phase1-ar-2016-04.md`](results/phase1-ar-2016-04.md),
 - [x] **Phase 1** — tokenizer, data pipeline, backbone, AR baseline (99.0% board probe), harness.
 - [x] **Phase 2** — JEPA arm + AR-vs-JEPA comparison + objective ablations (contrastive → 90.4%).
 - [x] **Phase 3** — rollout-drift experiment (JEPA dynamics ≈0 drift, self-consistent).
-- [ ] **Phase 4** — play/eval: can these world models actually *play*? AR via its move
-      policy; JEPA via latent planning. Tests whether the encoded world is *useful*, and
-      settles the latent-rollout-vs-AR question. In progress (`cwm/play.py`, `cwm/eval.py`).
+- [x] **Phase 4** — play/eval. AR plays real chess (95.8% vs random); the JEPA latent
+      planner (material value, 1-ply) plays at ~random (47.2%) and loses 200–0 to AR.
+      **Auditability ≠ actionability** — a 90% board probe doesn't make the world model
+      usable for play; per-square errors compound into a noisy value (corr 0.44).
+      See [`results/phase4-play.md`](results/phase4-play.md).
 
 ## Tests
 
